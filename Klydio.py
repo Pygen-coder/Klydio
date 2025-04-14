@@ -6,100 +6,79 @@ from PyQt5.QtWidgets import (
     QGroupBox,QGraphicsDropShadowEffect,QApplication,QToolButton,QGraphicsOpacityEffect
 )
 from PyQt5.QtGui import QIcon, QPixmap, QFont,QTransform,QColor
-from PyQt5.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve,pyqtProperty,QTimer,QEvent
-import vlc
+from PyQt5.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve,pyqtProperty,QTimer,QEvent,pyqtSignal
 
+class MouseTrackingFrame(QFrame):
+    mouse_moved = pyqtSignal()
 
-class VLCPlayer(QWidget):
+    def __init__(self, *args, **kwargs):
+        super(MouseTrackingFrame, self).__init__(*args, **kwargs)
+        self.setMouseTracking(True)
+
+    def mouseMoveEvent(self, event):
+        self.mouse_moved.emit()
+        super().mouseMoveEvent(event)
+
+from mpv import MPV
+
+class MPVPlayer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self.setStyleSheet("background-color: #1e1e1e;")
-        self.instance = vlc.Instance('--no-video-title-show', '--no-spu')
-
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setFocus()   
+        self.setFocus()
 
-        self.mediaplayer = self.instance.media_player_new()
-
-        self.fade_anim = None  # Keep reference to fade animation
-
+        # Main wrapper
         self.wrapper = QWidget(self)
         self.wrapper.setStyleSheet("background-color: transparent;")
 
-        self.video_frame = QFrame(self.wrapper)
-        self.video_frame.setStyleSheet("background-color: transparent;")
+        # Video area
+        self.video_frame = QWidget(self.wrapper)
         self.video_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        placeholder_layout = QVBoxLayout(self.video_frame)
-        placeholder_layout.setContentsMargins(0, 0, 0, 0)
-        placeholder_layout.setAlignment(Qt.AlignCenter)
+        video_layout = QVBoxLayout(self.video_frame)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setAlignment(Qt.AlignCenter)
 
-        self.placeholder_main = QLabel("Such emptiness 😢", self.video_frame)
-        self.placeholder_main.setStyleSheet("color: #888; font-size: 32px; font-weight: bold;")
-        self.placeholder_main.setAlignment(Qt.AlignCenter)
+        # Placeholder
+        self.placeholder = QLabel("No video loaded")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setStyleSheet("color: #888; font-size: 24px;")
+        video_layout.addWidget(self.placeholder)
 
-        self.placeholder_sub = QLabel("Play a video", self.video_frame)
-        self.placeholder_sub.setStyleSheet("color: #666; font-size: 18px;")
-        self.placeholder_sub.setAlignment(Qt.AlignCenter)
 
-        placeholder_layout.addWidget(self.placeholder_main)
-        placeholder_layout.addWidget(self.placeholder_sub)
+        # Buffering Spinner
+        self.buffering = QLabel(self.video_frame)
+        self.buffering.setPixmap(QPixmap("icons/spinner.gif"))  # <- use a real spinner.gif
+        self.buffering.setAlignment(Qt.AlignCenter)
+        self.buffering.hide()
 
+        # Overlay controls
         self.overlay = QWidget(self.wrapper)
         self.overlay.setFixedHeight(50)
-        self.overlay.setAttribute(Qt.WA_StyledBackground, True)
-        self.overlay.setStyleSheet("background-color: #2e2e2e; border-radius: 25px;")
+        self.overlay.setStyleSheet("background-color: #2e2e2e; border-radius: 10px;")
         self.overlay.hide()
 
         overlay_layout = QHBoxLayout(self.overlay)
-        overlay_layout.setContentsMargins(15, 0, 15, 0)
+        overlay_layout.setContentsMargins(10, 0, 10, 0)
         overlay_layout.setSpacing(10)
 
         self.play_pause_btn = QPushButton()
-        self.play_pause_btn.setIcon(QIcon("icons/pause.svg"))
+        self.play_pause_btn.setIcon(QIcon("icons/play.svg"))
         self.play_pause_btn.setIconSize(QSize(24, 24))
         self.play_pause_btn.setFixedSize(36, 36)
-        self.play_pause_btn.setCursor(Qt.PointingHandCursor)
         self.play_pause_btn.setFlat(True)
-        self.play_pause_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #444;
-                border-radius: 18px;
-            }
-            QPushButton:hover {
-                background-color: #666;
-            }
-        """)
         self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         overlay_layout.addWidget(self.play_pause_btn)
 
         self.timestamp = QLabel("00:00 / 00:00")
         self.timestamp.setStyleSheet("color: #ccc; font-size: 14px;")
-        self.timestamp.setFixedWidth(100)
         overlay_layout.addWidget(self.timestamp)
 
         self.progress_bar = QSlider(Qt.Horizontal)
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.sliderMoved.connect(self.set_position)
-        self.progress_bar.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: #444;
-                height: 6px;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: #00aaff;
-                border: none;
-                width: 12px;
-                margin: -4px 0;
-                border-radius: 6px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #00aaff;
-                border-radius: 3px;
-            }
-        """)
         overlay_layout.addWidget(self.progress_bar)
 
         self.volume_slider = QSlider(Qt.Horizontal)
@@ -107,186 +86,276 @@ class VLCPlayer(QWidget):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
         self.volume_slider.valueChanged.connect(self.set_volume)
-        self.volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: #444;
-                height: 6px;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: #ffaa00;
-                border: none;
-                width: 10px;
-                margin: -4px 0;
-                border-radius: 5px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #ffaa00;
-                border-radius: 3px;
-            }
-        """)
         overlay_layout.addWidget(self.volume_slider)
 
+        # Opacity effect for overlay
+        self.overlay_opacity = QGraphicsOpacityEffect()
+        self.overlay.setGraphicsEffect(self.overlay_opacity)
+        self.overlay.setMouseTracking(True)
+        self.overlay.installEventFilter(self)
+        self._hovering_overlay = False
+
+
+
+        self.fade_anim = QPropertyAnimation(self.overlay_opacity, b"opacity")
+        self.fade_anim.setDuration(300)
+ 
+        slider_style = """
+        QSlider::groove:horizontal {
+            height: 6px;
+            background: #444;
+            border-radius: 3px;
+        }
+
+        QSlider::handle:horizontal {
+            background: #00aaff;
+            border: none;
+            height: 16px;
+            width: 16px;
+            margin: -5px 0;
+            border-radius: 8px;
+        }
+
+        QSlider::sub-page:horizontal {
+            background: #00aaff;
+            border-radius: 3px;
+        }
+
+        QSlider::add-page:horizontal {
+            background: #333;
+            border-radius: 3px;
+        }
+        """
+
+        self.progress_bar.setStyleSheet(slider_style)
+        self.volume_slider.setStyleSheet(slider_style)
+
+        self.overlay_visible = True  # Track current visibility state
+        self.video_loaded = False
+
+
+
+
+
+        # Layouts
         wrapper_layout = QVBoxLayout(self.wrapper)
         wrapper_layout.setContentsMargins(0, 0, 0, 0)
         wrapper_layout.setSpacing(0)
         wrapper_layout.addWidget(self.video_frame)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.wrapper)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.wrapper)
 
-        self.timer = QTimer(self)
-        self.timer.setInterval(500)
-        self.timer.timeout.connect(self.update_progress)
+        # MPV instance
+        self.mpv = MPV(
+            wid=str(int(self.video_frame.winId())),
+            input_default_bindings=True,
+            input_vo_keyboard=True,
+            osc=False
+        )
 
-        self.hide_timer = QTimer(self)
-        self.hide_timer.setInterval(3000)
-        self.hide_timer.timeout.connect(self.hide_controls)
+        # --- Connect MPV events ---
+        self.mpv.event_callback('file-loaded')(self.on_file_loaded)
+        self.mpv.observe_property('pause', self.on_pause_change)
+        self.mpv.observe_property('time-pos', self.on_time_pos_change)
+        self.mpv.observe_property('duration', self.on_duration_change)
 
-        # Mouse tracking + event filter
-        self.setMouseTracking(True)
-        self.wrapper.setMouseTracking(True)
+        # State
+        self.playing = False
+        self.paused = False
+        self.current_time = 0
+        self.total_time = 0
+
+        # Timers
+        self.cursor_timer = QTimer(self)
+        self.cursor_timer.setInterval(300)
+        self.cursor_timer.timeout.connect(self.check_cursor_visibility)
+        self.cursor_timer.start()
+
+        self.cursor_hide_timer = QTimer(self)
+        self.cursor_hide_timer.setInterval(3000)
+        self.cursor_hide_timer.setSingleShot(True)
+        self.cursor_hide_timer.timeout.connect(self.hide_cursor)
+
+        # Mouse tracking
         self.video_frame.setMouseTracking(True)
-        self.overlay.setMouseTracking(True)
-
-        self.installEventFilter(self)
-        self.wrapper.installEventFilter(self)
         self.video_frame.installEventFilter(self)
-        self.overlay.installEventFilter(self)
-
-        
-
-    def play_file(self, filepath):
-        if os.path.exists(filepath):
-            media = self.instance.media_new(filepath)
-            self.mediaplayer.set_media(media)
-            self.mediaplayer.video_set_spu(-1)  # Disable subtitle rendering
-
-
-            def start_playback():
-                win_id = self.video_frame.winId()
-                if sys.platform.startswith('linux'):
-                    self.mediaplayer.set_xwindow(win_id)
-                elif sys.platform == "win32":
-                    self.mediaplayer.set_hwnd(win_id)
-                elif sys.platform == "darwin":
-                    self.mediaplayer.set_nsobject(int(win_id))
-
-                self.placeholder_main.hide()
-                self.placeholder_sub.hide()
-
-                self.mediaplayer.play()
-                self.timer.start()
-                self.show_controls()
-
-            QTimer.singleShot(100, start_playback)
-
-    def toggle_play_pause(self):
-        if self.mediaplayer.is_playing():
-            self.mediaplayer.pause()
-            self.play_pause_btn.setIcon(QIcon("icons/play.svg"))
-        else:
-            self.mediaplayer.play()
-            self.play_pause_btn.setIcon(QIcon("icons/pause.svg"))
-        self.show_controls()
-
-    def set_position(self, position):
-        if self.mediaplayer.get_length() > 0:
-            self.mediaplayer.set_position(position / 1000.0)
-
-    def update_progress(self):
-        length = self.mediaplayer.get_length()
-        if length > 0:
-            pos = self.mediaplayer.get_position()
-            self.progress_bar.setValue(int(pos * 1000))
-            current = int(pos * length)
-            self.timestamp.setText(f"{self._format_time(current)} / {self._format_time(length)}")
-
-    def set_volume(self, value):
-        self.mediaplayer.audio_set_volume(value)
-
-    def _format_time(self, ms):
-        seconds = ms // 1000
-        m, s = divmod(seconds, 60)
-        return f"{m:02d}:{s:02d}"
-
-    def show_controls(self):
-        self.update_overlay_position()
-
-        if self.fade_anim:
-            self.fade_anim.stop()
-
-        if not self.overlay.isVisible():
-            self.overlay.setVisible(True)
-
-        self.overlay.raise_()
-
-        effect = QGraphicsOpacityEffect(self.overlay)
-        self.overlay.setGraphicsEffect(effect)
-
-        self.fade_anim = QPropertyAnimation(effect, b"opacity", self)
-        self.fade_anim.setDuration(300)
-        self.fade_anim.setStartValue(0.0)
-        self.fade_anim.setEndValue(1.0)
-        self.fade_anim.start()
-
-        self.hide_timer.start()
-
-    def hide_controls(self):
-        self.hide_timer.stop()
-
-        effect = QGraphicsOpacityEffect(self.overlay)
-        self.overlay.setGraphicsEffect(effect)
-
-        self.fade_anim = QPropertyAnimation(effect, b"opacity", self)
-        self.fade_anim.setDuration(300)
-        self.fade_anim.setStartValue(1.0)
-        self.fade_anim.setEndValue(0.0)
-
-        def on_fade_done():
-            self.overlay.setVisible(False)
-            self.overlay.setGraphicsEffect(None)
-
-        self.fade_anim.finished.connect(on_fade_done)
-        self.fade_anim.start()
-
-    def update_overlay_position(self):
-        width = int(self.wrapper.width() * 0.75)
-        self.overlay.resize(width, 50)
-        x = (self.wrapper.width() - width) // 2
-        y = self.wrapper.height() - 80
-        self.overlay.move(x, y)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.update_overlay_position()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Space:
-            self.toggle_play_pause()
-        elif event.key() == Qt.Key_Right:
-            self.skip_forward(5)
-        elif event.key() == Qt.Key_Left:
-            self.skip_backward(5)
-        super().keyPressEvent(event)
-
-    def skip_forward(self, seconds):
-        pos = self.mediaplayer.get_time() + (seconds * 1000)
-        self.mediaplayer.set_time(pos)
-
-    def skip_backward(self, seconds):
-        pos = max(0, self.mediaplayer.get_time() - (seconds * 1000))
-        self.mediaplayer.set_time(pos)
 
     def eventFilter(self, source, event):
-        if event.type() == QEvent.MouseMove:
-            self.show_controls()
-            self.hide_timer.start()
+        if source == self.video_frame and event.type() == QEvent.MouseMove:
+            QApplication.setOverrideCursor(Qt.ArrowCursor)
+            self.cursor_hide_timer.start()
+        elif source == self.overlay:
+            if event.type() == QEvent.Enter:
+                self._hovering_overlay = True
+                self.cursor_hide_timer.stop()
+            elif event.type() == QEvent.Leave:
+                self._hovering_overlay = False
+                self.cursor_hide_timer.start()
         return super().eventFilter(source, event)
 
 
+    def hide_cursor(self):
+        if self._hovering_overlay:
+            return  # Don't hide if hovering over controls
 
+        QApplication.setOverrideCursor(Qt.BlankCursor)
+
+
+    def check_cursor_visibility(self):
+        cursor = QApplication.overrideCursor()
+        is_cursor_visible = cursor is None or cursor.shape() != Qt.BlankCursor
+
+        if is_cursor_visible and not self.overlay_visible:
+            self.fade_overlay_in()
+            self.overlay_visible = True
+        elif not is_cursor_visible and self.overlay_visible:
+            self.fade_overlay_out()
+            self.overlay_visible = False
+
+
+    def fade_overlay_in(self):
+        if self.overlay_visible or not self.video_loaded:
+            return  # Already shown, or no video — skip
+
+        self.overlay.show()
+        self.fade_anim.stop()
+        self.fade_anim.setStartValue(self.overlay_opacity.opacity())
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.finished.disconnect() if self.fade_anim.receivers(self.fade_anim.finished) > 0 else None
+        self.fade_anim.finished.connect(lambda: setattr(self, 'overlay_visible', True))
+        self.fade_anim.start()
+
+
+    def fade_overlay_out(self):
+        if not self.overlay_visible:
+            return  # Already hidden, skip
+        self.fade_anim.stop()
+        self.fade_anim.setStartValue(self.overlay_opacity.opacity())
+        self.fade_anim.setEndValue(0.0)
+        self.fade_anim.finished.disconnect() if self.fade_anim.receivers(self.fade_anim.finished) > 0 else None
+        self.fade_anim.finished.connect(self._hide_overlay)
+
+        self.fade_anim.start()
+
+    def _hide_overlay(self):
+        self.overlay.hide()
+        self.overlay_visible = False
+
+
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.overlay.resize(self.wrapper.width() - 100, 50)
+        self.overlay.move(
+            (self.wrapper.width() - self.overlay.width()) // 2,
+            self.wrapper.height() - 80
+        )
+        self.buffering.move(
+            (self.video_frame.width() - self.buffering.width()) // 2,
+            (self.video_frame.height() - self.buffering.height()) // 2
+        )
+
+    def play_file(self, filepath):
+        self.mpv.play(filepath)
+        self.buffering.show()
+        self.placeholder.hide()
+
+    def on_file_loaded(self, event):
+        self.playing = True
+        self.paused = False
+        self.video_loaded = True  # <-- add this
+        self.buffering.hide()
+        self.update_play_pause_icon()
+
+
+    def on_pause_change(self, name, value):
+        self.paused = value
+        self.update_play_pause_icon()
+
+    def on_time_pos_change(self, name, value):
+        if self.playing and value is not None:
+            self.current_time = value
+            self.update_timestamp()
+
+    def on_duration_change(self, name, value):
+        if self.playing and value is not None:
+            self.total_time = value
+            self.update_timestamp()
+    
+    def set_active(self, active):
+        if active:
+            self.cursor_timer.start()
+            self.cursor_hide_timer.start()
+        else:
+            self.cursor_timer.stop()
+            self.cursor_hide_timer.stop()
+            QApplication.setOverrideCursor(Qt.ArrowCursor)
+            self.fade_overlay_in()
+        if not active:
+            self.video_loaded = False
+            self.overlay_visible = False
+            self.overlay.hide()
+            QApplication.setOverrideCursor(Qt.ArrowCursor)
+
+
+
+
+    def update_timestamp(self):
+        if self.total_time > 0:
+            self.timestamp.setText(f"{self._format_time(self.current_time)} / {self._format_time(self.total_time)}")
+            self.progress_bar.setValue(int((self.current_time / self.total_time) * 1000))
+        else:
+            self.timestamp.setText("00:00 / 00:00")
+            self.progress_bar.setValue(0)
+
+    def toggle_play_pause(self):
+        if self.playing:
+            self.mpv.command('cycle', 'pause')
+
+    def update_play_pause_icon(self):
+        if self.paused:
+            self.play_pause_btn.setIcon(QIcon("icons/play.svg"))
+        else:
+            self.play_pause_btn.setIcon(QIcon("icons/pause.svg"))
+
+    def set_position(self, value):
+        if self.playing and self.total_time > 0:
+            self.mpv.seek((value / 1000.0) * self.total_time, reference='absolute')
+
+    def set_volume(self, value):
+        self.mpv.volume = value
+
+    def _format_time(self, seconds):
+        seconds = int(seconds)
+        m, s = divmod(seconds, 60)
+        return f"{m:02d}:{s:02d}"
+
+    def keyPressEvent(self, event):
+        if not self.playing:
+            return
+
+        if event.key() == Qt.Key_Space:
+            self.toggle_play_pause()
+
+        elif event.key() == Qt.Key_Left:
+            self.mpv.command('seek', -5)
+
+        elif event.key() == Qt.Key_Right:
+            self.mpv.command('seek', 5)
+
+        elif event.key() == Qt.Key_Up:
+            volume = self.mpv.volume or 50
+            volume = min(volume + 5, 100)
+            self.mpv.volume = volume
+            self.volume_slider.setValue(int(volume))
+
+        elif event.key() == Qt.Key_Down:
+            volume = self.mpv.volume or 50
+            volume = max(volume - 5, 0)
+            self.mpv.volume = volume
+            self.volume_slider.setValue(int(volume))
 
 
 class SpinningLogo(QLabel):
@@ -319,21 +388,13 @@ class SpinningLogo(QLabel):
     angle = pyqtProperty(float, fget=get_angle, fset=set_angle)
 
 
-
-
 class TopBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(48)
         self.setStyleSheet("background-color: #2a2a2a;")
 
-        # Apply drop shadow effect
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(15)
-        shadow.setXOffset(0)
-        shadow.setYOffset(2)
-        shadow.setColor(QColor(0, 0, 0, 150))  # Semi-transparent black
-        self.setGraphicsEffect(shadow)
+
 
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -453,6 +514,9 @@ class HomeScreen(QWidget):
         self.setStyleSheet("background-color: #1e1e1e; color: white;")
         self.sidebar_expanded = False
         self.selected_button = None
+
+        
+
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -649,22 +713,16 @@ class HomeScreen(QWidget):
         open_button.clicked.connect(self.open_files)
         self.content_layout.addWidget(open_button)
 
-        # Add Player page with VLC widget
-        self.vlc_player = VLCPlayer()
-        self.pages.addWidget(self.vlc_player)
-        self.page_widgets["Player"] = self.vlc_player
-
 
         # Finally add to pages
         self.pages.addWidget(home_page_container)
         self.page_widgets["Home"] = home_page_container
 
 
-
         # Placeholder pages for others
         for _, _, label in self.menu_buttons:
             if label == "Player":
-                self.vlc_player = VLCPlayer()
+                self.vlc_player = MPVPlayer()
                 self.pages.addWidget(self.vlc_player)
                 self.page_widgets[label] = self.vlc_player
             elif label != "Home":
@@ -709,43 +767,41 @@ class HomeScreen(QWidget):
         btn.setStyleSheet(self.get_button_style(self.sidebar_expanded, selected=False))
         return btn
     
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_F:
-            if not hasattr(self, 'is_fullscreen'):
-                self.is_fullscreen = False
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key == Qt.Key_F:
+                self.toggle_fullscreen()
+                return True
+            elif key == Qt.Key_Escape and getattr(self, 'is_fullscreen', False):
+                self.exit_fullscreen()
+                return True
+        return super().eventFilter(obj, event)
 
-            if not self.is_fullscreen:
-                # Maximize window if not already maximized
-                if not self.isMaximized():
-                    self.showMaximized()
+    def toggle_fullscreen(self):
+        if not hasattr(self, 'is_fullscreen'):
+            self.is_fullscreen = False
 
-                # Hide sidebar and topbar
-                self.top_bar.hide()
-                self.sidebar_frame.hide()
+        if not self.is_fullscreen:
+            if not self.isMaximized():
+                self.showMaximized()
+            self.top_bar.hide()
+            self.sidebar_frame.hide()
+            self.pages.setContentsMargins(0, 0, 0, 0)
+            self.vlc_player.wrapper.layout().setContentsMargins(0, 0, 0, 0)
+            self.is_fullscreen = True
+        else:
+            self.exit_fullscreen()
 
-                # Expand the player
-                self.pages.setContentsMargins(0, 0, 0, 0)
-                self.vlc_player.wrapper.layout().setContentsMargins(0, 0, 0, 0)
-                self.is_fullscreen = True
-            else:
-                # Restore sidebar and topbar
-                self.top_bar.show()
-                self.sidebar_frame.show()
+    def exit_fullscreen(self):
+        self.top_bar.show()
+        self.sidebar_frame.show()
+        self.pages.setContentsMargins(0, 0, 0, 0)
+        self.vlc_player.wrapper.layout().setContentsMargins(0, 0, 0, 0)
+        self.is_fullscreen = False
 
-                # Restore margins
-                self.pages.setContentsMargins(0, 0, 0, 0)
-                self.vlc_player.wrapper.layout().setContentsMargins(0, 0, 0, 0)
 
-                self.is_fullscreen = False
 
-        elif event.key() == Qt.Key_Escape:
-            if hasattr(self, 'is_fullscreen') and self.is_fullscreen:
-                # Restore everything if Esc pressed
-                self.top_bar.show()
-                self.sidebar_frame.show()
-                self.pages.setContentsMargins(0, 0, 0, 0)
-                self.vlc_player.wrapper.layout().setContentsMargins(0, 0, 0, 0)
-                self.is_fullscreen = False
 
     
     def create_footer(self, label, icon_path):
@@ -814,6 +870,12 @@ class HomeScreen(QWidget):
             index = self.pages.indexOf(widget)
             self.pages.setCurrentIndex(index)
 
+            # Activate/deactivate MPVPlayer mouse logic
+            if isinstance(widget, MPVPlayer):
+                widget.set_active(True)
+            else:
+                self.vlc_player.set_active(False)
+
 
 
 
@@ -870,4 +932,5 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     window = HomeScreen()
     window.show()
+    app.installEventFilter(window)
     sys.exit(app.exec_())
